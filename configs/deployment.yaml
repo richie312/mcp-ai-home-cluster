@@ -1,0 +1,89 @@
+actions:
+
+  fetch_env_files:
+    params: [app, source_node, source_path]
+
+    script: |
+      LOG="/executor/logs/fetch_env_$app.log"
+      mkdir -p /executor/logs
+
+      echo "[$(date)] Fetching env file for $app" | tee -a $LOG
+
+      mkdir -p /home/richie/$app
+
+      scp pi@$source_node:$source_path/.env /home/richie/$app/.env \
+        >> $LOG 2>&1
+
+      if [ $? -eq 0 ]; then
+        echo "[$(date)] Env file fetched successfully for $app" | tee -a $LOG
+      else
+        echo "[$(date)] ERROR fetching env file for $app" | tee -a $LOG
+        exit 1
+      fi
+
+actions:
+
+  fetch_backup:
+    params: [backup_file, source_node, source_path]
+
+    script: |
+      LOG="/executor/logs/fetch_backup.log"
+      mkdir -p /executor/logs
+
+      echo "[$(date)] Fetching backup $backup_file" | tee -a $LOG
+
+      if [ -z "$BACKUP_DIR" ]; then
+        echo "ERROR: BACKUP_DIR not set in environment" | tee -a $LOG
+        exit 1
+      fi
+
+      mkdir -p $BACKUP_DIR
+
+      scp pi@$source_node:$source_path/$backup_file $BACKUP_DIR/$backup_file \
+        >> $LOG 2>&1
+
+      if [ $? -eq 0 ]; then
+        echo "[$(date)] Backup stored at $BACKUP_DIR/$backup_file" | tee -a $LOG
+      else
+        echo "[$(date)] ERROR fetching backup" | tee -a $LOG
+        exit 1
+      fi
+
+  setup_infrastructure:
+    params: []
+
+    script: |
+      LOG="/executor/logs/infrastructure.log"
+      mkdir -p /executor/logs
+
+      log() {
+        echo "[$(date)] $1" | tee -a $LOG
+      }
+
+      log "Starting shared infrastructure setup"
+
+      # 1. Create shared docker network
+      docker network inspect home_shared >/dev/null 2>&1 || \
+      docker network create home_shared
+
+      log "Docker network 'home_shared' ready"
+
+      # 2. Create shared volumes
+      docker volume create shared_data || true
+      docker volume create shared_logs || true
+
+      log "Shared docker volumes ready"
+
+      # 3. Create common directories
+      mkdir -p /data/backups
+      mkdir -p /data/logs
+      mkdir -p /data/uploads
+
+      log "Common directories created under /data"
+
+      # 4. Set permissions
+      chmod -R 755 /data
+
+      log "Permissions set for /data"
+
+      log "Infrastructure setup completed successfully"

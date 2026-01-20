@@ -1,0 +1,4 @@
+executor/*.log 
+configs/secrets.yaml
+*.env
+mcp-client/app/devices.json
