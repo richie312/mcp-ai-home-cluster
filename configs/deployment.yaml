@@ -3,6 +3,7 @@ version: 1
 vars:
   env_dir: /home/richie/env
   network: my_rasp_network
+  mount_db_file: /home/richie/pi-backups/${LATEST_BACKUP_FILE}
 
 actions:
 
@@ -30,6 +31,14 @@ actions:
         compose_file: /home/richie/common_infra_python_abstraction_layer/docker-compose.yaml
         detached: true
     
+  mount_db_data_volume:
+    description: ensure mysql data volume is mounted
+    steps:
+      - type: docker_exec
+        container: common-infra
+        command: export db_passwd=$(grep '^db_passwd=' /home/richie/private-secrets/mcp-secrets/notify/.env | cut -d '=' -f2-)
+        command: docker exec -i mysql mysql -uroot -p"$db_passwd" < "${mount_db_file}"
+
 
   pull_notify:
     description: pull notify image

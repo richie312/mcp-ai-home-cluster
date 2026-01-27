@@ -12,7 +12,7 @@ if [ ! -f "$DEPLOYMENT_FILE" ]; then
 fi
 
 # --------------------------------------------------
-# Helpers
+# Logging helpers
 # --------------------------------------------------
 
 log() {
@@ -25,7 +25,32 @@ run_cmd() {
 }
 
 # --------------------------------------------------
-# Iterate actions in YAML order
+# Resolve LATEST_BACKUP_FILE
+# --------------------------------------------------
+
+BACKUP_DIR="/home/richie/pi-backups"
+
+LATEST_BACKUP_FILE=""
+
+if [ -d "$BACKUP_DIR" ]; then
+  LATEST_BACKUP_FILE=$(ls -t "$BACKUP_DIR" 2>/dev/null | head -n 1 || true)
+fi
+
+export LATEST_BACKUP_FILE
+
+log "LATEST_BACKUP_FILE=${LATEST_BACKUP_FILE:-NONE}"
+
+# --------------------------------------------------
+# Variable expansion helper
+# --------------------------------------------------
+
+expand_vars() {
+  local raw="$1"
+  eval echo "$raw"
+}
+
+# --------------------------------------------------
+# Iterate actions IN FILE ORDER
 # --------------------------------------------------
 
 ACTIONS=$(yq e '.actions | to_entries | .[].key' "$DEPLOYMENT_FILE")
@@ -36,6 +61,7 @@ for ACTION in $ACTIONS; do
   STEP_COUNT=$(yq e ".actions.${ACTION}.steps | length" "$DEPLOYMENT_FILE")
 
   for ((i=0; i<STEP_COUNT; i++)); do
+
     TYPE=$(yq e ".actions.${ACTION}.steps[$i].type" "$DEPLOYMENT_FILE")
 
     log "Step $((i+1)) / $STEP_COUNT → $TYPE"
@@ -65,10 +91,7 @@ for ACTION in $ACTIONS; do
         DETACHED=$(yq e ".actions.${ACTION}.steps[$i].detached" "$DEPLOYMENT_FILE")
 
         CMD="docker compose -p $PROJECT -f $FILE up"
-
-        if [ "$DETACHED" = "true" ]; then
-          CMD="$CMD -d"
-        fi
+        [ "$DETACHED" = "true" ] && CMD="$CMD -d"
 
         run_cmd "$CMD"
         ;;
@@ -82,49 +105,54 @@ for ACTION in $ACTIONS; do
         PORT_ARGS=""
         VOLUME_ARGS=""
 
-        PORTS=$(yq e ".actions.${ACTION}.steps[$i].ports[]" "$DEPLOYMENT_FILE" 2>/dev/null || true)
-        for p in $PORTS; do
-          PORT_ARGS="$PORT_ARGS -p $p"
+        for p in $(yq e ".actions.${ACTION}.steps[$i].ports[]" "$DEPLOYMENT_FILE" 2>/dev/null || true); do
+          PORT_ARGS+=" -p $p"
         done
 
-        VOLUMES=$(yq e ".actions.${ACTION}.steps[$i].volumes[]" "$DEPLOYMENT_FILE" 2>/dev/null || true)
-        for v in $VOLUMES; do
-          VOLUME_ARGS="$VOLUME_ARGS -v $v"
+        for v in $(yq e ".actions.${ACTION}.steps[$i].volumes[]" "$DEPLOYMENT_FILE" 2>/dev/null || true); do
+          VOLUME_ARGS+=" -v $v"
         done
-
-        CMD="docker run -d --name $NAME --network $NETWORK $PORT_ARGS $VOLUME_ARGS"
-
-        if [ "$RESTART" != "null" ]; then
-          CMD="$CMD --restart $RESTART"
-        fi
-
-        CMD="$CMD $IMAGE"
 
         docker rm -f "$NAME" >/dev/null 2>&1 || true
+
+        CMD="docker run -d --name $NAME --network $NETWORK"
+        [ "$RESTART" != "null" ] && CMD+=" --restart $RESTART"
+
+        CMD="$CMD $PORT_ARGS $VOLUME_ARGS $IMAGE"
 
         run_cmd "$CMD"
         ;;
 
-      firewall)
-        PORTS=$(yq e ".actions.${ACTION}.steps[$i].ports[]" "$DEPLOYMENT_FILE")
+      docker_exec)
+        CONTAINER=$(yq e ".actions.${ACTION}.steps[$i].container" "$DEPLOYMENT_FILE")
 
-        for PORT in $PORTS; do
+        COMMANDS=$(yq e ".actions.${ACTION}.steps[$i].command[]" "$DEPLOYMENT_FILE" 2>/dev/null || \
+                   yq e ".actions.${ACTION}.steps[$i].command" "$DEPLOYMENT_FILE")
+
+        for RAW in $COMMANDS; do
+          CMD=$(expand_vars "$RAW")
+          run_cmd "$CMD"
+        done
+        ;;
+
+      firewall)
+        for PORT in $(yq e ".actions.${ACTION}.steps[$i].ports[]" "$DEPLOYMENT_FILE"); do
           run_cmd "sudo ufw allow $PORT"
         done
         ;;
 
       container_check)
-        NAMES=$(yq e ".actions.${ACTION}.steps[$i].names[]" "$DEPLOYMENT_FILE")
-
-        for NAME in $NAMES; do
+        for NAME in $(yq e ".actions.${ACTION}.steps[$i].names[]" "$DEPLOYMENT_FILE"); do
           log "Checking container $NAME"
+
           docker inspect -f '{{.State.Running}}' "$NAME" | grep true >/dev/null \
             || { echo "Container $NAME is NOT running"; exit 1; }
         done
         ;;
 
       shell)
-        CMD=$(yq e ".actions.${ACTION}.steps[$i].command" "$DEPLOYMENT_FILE")
+        RAW=$(yq e ".actions.${ACTION}.steps[$i].command" "$DEPLOYMENT_FILE")
+        CMD=$(expand_vars "$RAW")
         run_cmd "$CMD"
         ;;
 
