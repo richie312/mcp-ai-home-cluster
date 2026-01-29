@@ -3,6 +3,9 @@ version: 1
 vars:
   env_dir: /home/richie/env
   network: my_rasp_network
+  mount_db_file: /home/richie/common_infra_python_abstraction_layer/mysql_backups
+  RCLONE_BACKUP_REMOTE: "master_rasp_node:pi-backups"
+  
 
 actions:
 
@@ -16,10 +19,11 @@ actions:
         name: mysql_ubuntu_rasp_device
 
   pull_common_infra:
-    description: pull kafka+redis+mysql image
+    description: pull kafka+redis+mysql git repo
     steps:
-      - type: docker_pull
-        image: richie31/common-infra-python-library:latest
+      - type: git_clone
+        repo: https://github.com/richie312/common_infra_python_abstraction_layer.git
+        dest: /home/richie/common_infra_python_abstraction_layer
 
 
   deploy_common_infra:
@@ -27,23 +31,66 @@ actions:
     steps:
       - type: compose_up
         project_name: common_infra_python_abstraction_layer
-        compose_file: /home/richie/common_infra_python_abstraction_layer/docker-compose.yaml
+        compose_file: /home/richie/common_infra_python_abstraction_layer/docker-compose.yml
         detached: true
-    
+  
+  # db_passwd:
+  #   description: get database password from private secrets
+  #   steps:
+  #     - type: shell
+  #       command: db_passwd=$(grep '^db_passwd=' /home/richie/private-secrets/notify/.env | cut -d '=' -f2-)
+
+  latest_backup_file:
+    description: get latest mysql backup file path
+    steps:
+      - type: shell
+        command: |
+          latest_backup_file=$(find /home/richie/pi-backups -maxdepth 1 -type f -name '*.sql' -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)
+
+  wait_for_mysql:
+    steps:
+      - type: shell
+        command: |
+          echo "Waiting for MySQL to stabilize..."
+
+          OK=0
+          while true; do
+            if docker exec mysql mysqladmin ping -uroot -p"$MYSQL_ROOT_PASSWORD" --silent >/dev/null 2>&1; then
+              OK=$((OK+1))
+              echo "mysql up ($OK/5)"
+            else
+              OK=0
+              echo "mysql not ready yet"
+            fi
+
+            [ "$OK" -ge 5 ] && break
+            sleep 2
+          done
+
+
+  mount_db_data_volume:
+    description: ensure mysql data volume is mounted
+    steps:
+      - type: docker_exec
+        container: mysql
+        command: mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --socket=/var/run/mysqld/mysqld.sock
+        stdin_file: /host/home/richie/pi-backups/all_databases_backup.sql
+
 
   pull_notify:
-    description: pull notify image
+    description: pull notify git repo
     steps:
-      - type: docker_pull
-        image: richie31/notify:latest
+      - type: git_clone
+        repo: https://github.com/richie312/noTify.git
+        dest: /home/richie/notify
 
 
   deploy_notify:
     description: deploy notify application using docker compose command
     steps:
       - type: compose_up
-        project_name: noTify
-        compose_file: /home/richie/notify/docker-compose.yaml
+        project_name: notify
+        compose_file: /home/richie/notify/docker-compose.yml
         detached: true
 
 
@@ -64,8 +111,11 @@ actions:
     steps:
       - type: container_check
         names:
-          - common-infra
-          - notify
+          - common_infra
+          - noTify
+          - mysql
+          - redis-server
+          - broker
 
 
   start_portainer:
@@ -87,7 +137,7 @@ actions:
         command: chmod +x /home/richie/common_infra_python_abstraction_layer/db_backup.sh
 
       - type: shell
-        command: chmod +x /home/richie/common_infra_python_abstraction_layer/delete_old_backups.sh
+        command: chmod +x /home/richie/common_infra_python_abstraction_layer/delete_old_back_ups.sh
 
   schedule_db_backup:
     steps:
@@ -100,6 +150,7 @@ actions:
     steps:
       - type: cron
         name: delete-old-backups
-        schedule: "30 2 28-31 * * [ \"$(date +\%d -d tomorrow)\" = \"01\" ]"
-        command: "/home/richie/common_infra_python_abstraction_layer/delete_old_backups.sh"
+        schedule: |
+          30 2 28-31 * * [ "$(date +%d -d tomorrow)" = "01" ]
+        command: "/home/richie/common_infra_python_abstraction_layer/delete_old_back_ups.sh"
 
